@@ -1,53 +1,125 @@
 import { useEffect } from "preact/hooks";
 import "./app.css";
+import vertexShader from "./shader/square.vert.wgsl?raw";
+import fragmentShader from "./shader/square.frag.wgsl?raw";
+
+const vertices = new Float32Array([
+  -0.8,
+  -0.8, // Triangle 1
+  0.8,
+  -0.8,
+  0.8,
+  0.8,
+
+  -0.8,
+  -0.8, // Triangle 2
+  0.8,
+  0.8,
+  -0.8,
+  0.8,
+]);
+
+const vertexBufferLayout: GPUVertexBufferLayout = {
+  arrayStride: 8,
+  attributes: [
+    {
+      format: "float32x2",
+      offset: 0,
+      shaderLocation: 0, // Position, see vertex shader
+    },
+  ],
+}; //TODO Using something called Index Buffers, you can feed a separate list of values to the GPU that tells it what vertices to connect together into triangles
+
+const initialize = async () => {
+  const devicePixelRatio = window.devicePixelRatio;
+  const canvas: HTMLCanvasElement | null = document.querySelector("#canvas");
+  if (canvas == null) {
+    return;
+  }
+  canvas.width = canvas.clientWidth * devicePixelRatio;
+  canvas.height = canvas.clientHeight * devicePixelRatio;
+
+  if (!navigator.gpu) {
+    throw new Error("WebGPU not supported on this browser.");
+  }
+  const adapter = await navigator.gpu.requestAdapter();
+
+  if (!adapter) {
+    throw new Error("No adapter found!");
+  }
+  const device = await adapter.requestDevice();
+  const context = canvas.getContext("webgpu");
+  if (!context) {
+    return;
+  }
+  const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({
+    device: device,
+    format: canvasFormat,
+  });
+  const encoder = device.createCommandEncoder();
+
+  //initialize shaders (compiling etc)
+  const vertexModule = device.createShaderModule({
+    label: "Vert Shader",
+    code: vertexShader,
+  });
+  const fragmentModule = device.createShaderModule({
+    label: "Frag Shader",
+    code: fragmentShader,
+  });
+
+  //write data
+  const vertexBuffer = device.createBuffer({
+    label: "Vertices",
+    size: vertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+
+  device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+  //rendering
+
+  const pupeline = device.createRenderPipeline({
+    label: "Pipeline",
+    layout: "auto",
+    vertex: {
+      module: vertexModule,
+      entryPoint: "main",
+      buffers: [vertexBufferLayout],
+    },
+    fragment: {
+      module: fragmentModule,
+      entryPoint: "main",
+      targets: [
+        {
+          format: canvasFormat,
+        },
+      ],
+    },
+  });
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [
+      {
+        view: context.getCurrentTexture().createView(),
+        clearValue: [1, 1, 0.2, 0.5],
+        loadOp: "clear",
+        storeOp: "store",
+      },
+    ],
+  });
+  pass.setPipeline(pupeline);
+  pass.setVertexBuffer(0, vertexBuffer);
+  pass.draw(vertices.length / 2);
+
+  pass.end();
+
+  device.queue.submit([encoder.finish()]);
+};
 
 export function App() {
   useEffect(() => {
-    const initialize = async () => {
-      const devicePixelRatio = window.devicePixelRatio;
-      const canvas: HTMLCanvasElement | null =
-        document.querySelector("#canvas");
-      if (canvas == null) {
-        return;
-      }
-      canvas.width = canvas.clientWidth * devicePixelRatio;
-      canvas.height = canvas.clientHeight * devicePixelRatio;
-
-      const presentationFormat: GPUTextureFormat =
-        navigator.gpu.getPreferredCanvasFormat();
-
-      if (!navigator.gpu) {
-        throw new Error("WebGPU not supported on this browser.");
-      }
-      const adapter = await navigator.gpu.requestAdapter();
-
-      if (!adapter) {
-        throw new Error("No adapter found!");
-      }
-      const device = await adapter.requestDevice();
-      const context = canvas.getContext("webgpu");
-      if (!context) {
-        return;
-      }
-      context.configure({
-        device: device,
-        format: navigator.gpu.getPreferredCanvasFormat(),
-      });
-      const encoder = device.createCommandEncoder();
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: context.getCurrentTexture().createView(),
-            clearValue: [0.5, 0.3, 0.2, 1],
-            loadOp: "clear",
-            storeOp: "store",
-          },
-        ],
-      });
-      pass.end();
-
-      device.queue.submit([encoder.finish()]);
-    };
     initialize();
   }, []);
 
