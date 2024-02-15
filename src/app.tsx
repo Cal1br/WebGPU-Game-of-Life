@@ -1,4 +1,4 @@
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import "./app.css";
 import vertexShader from "./shader/square.vert.wgsl?raw";
 import fragmentShader from "./shader/square.frag.wgsl?raw";
@@ -28,9 +28,12 @@ const vertexBufferLayout: GPUVertexBufferLayout = {
       shaderLocation: 0, // Position, see vertex shader
     },
   ],
-}; //TODO Using something called Index Buffers, you can feed a separate list of values to the GPU that tells it what vertices to connect together into triangles
+};
 
-const initialize = async () => {
+//TODO Using something called Index Buffers, you can feed a separate list of values to the GPU that tells it what vertices to connect together into triangles
+
+//reinitializng the pipeline is expensive
+const initialize = async (gridSize: number) => {
   const devicePixelRatio = window.devicePixelRatio;
   const canvas: HTMLCanvasElement | null = document.querySelector("#canvas");
   if (canvas == null) {
@@ -78,9 +81,17 @@ const initialize = async () => {
 
   device.queue.writeBuffer(vertexBuffer, 0, vertices);
 
+  const uniformArray = new Float32Array([gridSize, gridSize]);
+  const uniformBuffer = device.createBuffer({
+    label: "Grid Uniforms",
+    size: uniformArray.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+
   //rendering
 
-  const pupeline = device.createRenderPipeline({
+  const pipeline = device.createRenderPipeline({
     label: "Pipeline",
     layout: "auto",
     vertex: {
@@ -99,19 +110,32 @@ const initialize = async () => {
     },
   });
 
+  const bindGroup = device.createBindGroup({
+    label: "Cell renderer bind group",
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      {
+        binding: 0,
+        resource: { buffer: uniformBuffer },
+      },
+    ],
+  });
+
   const pass = encoder.beginRenderPass({
     colorAttachments: [
       {
         view: context.getCurrentTexture().createView(),
-        clearValue: [1, 1, 0.2, 0.5],
+        clearValue: [0, 0, 0, 0.5],
         loadOp: "clear",
         storeOp: "store",
       },
     ],
   });
-  pass.setPipeline(pupeline);
+  pass.setPipeline(pipeline);
   pass.setVertexBuffer(0, vertexBuffer);
-  pass.draw(vertices.length / 2);
+  pass.setBindGroup(0, bindGroup);
+
+  pass.draw(vertices.length / 2, gridSize * gridSize);
 
   pass.end();
 
@@ -119,9 +143,11 @@ const initialize = async () => {
 };
 
 export function App() {
+  const [grid, setGrid] = useState(64);
+
   useEffect(() => {
-    initialize();
-  }, []);
+    initialize(grid);
+  }, [grid]);
 
   return (
     <>
