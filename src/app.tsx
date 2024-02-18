@@ -30,7 +30,7 @@ const vertexBufferLayout: GPUVertexBufferLayout = {
     },
   ],
 };
-const cellStateArray = new Uint32Array(32 * 32);
+const cellStateArray = new Uint32Array(64 * 64);
 
 const WORKGROUP_SIZE = 8;
 
@@ -39,7 +39,7 @@ const WORKGROUP_SIZE = 8;
 //reinitializng the pipeline is expensive
 
 export function App() {
-  const [grid, setGrid] = useState(32);
+  const [grid, setGrid] = useState(64);
   const [step, setStep] = useState(0);
   const [vertexBuffer, setVertexBuffer] = useState<GPUBuffer>();
   const [cellStates, setCellStates] = useState<GPUBuffer[]>();
@@ -152,9 +152,8 @@ export function App() {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       }),
     ];
-
-    for (let i = 0; i < cellStateArray.length; i += 4) {
-      cellStateArray[i + 1] = 1;
+    for (let i = 0; i < cellStateArray.length; ++i) {
+      cellStateArray[i] = Math.random() > 0.6 ? 1 : 0;
     }
     device.queue.writeBuffer(buffersCellState[0], 0, cellStateArray);
 
@@ -302,6 +301,10 @@ export function App() {
     pass.end();
     device.queue.submit([encoder.finish()]);
 
+    setTimeout(() => {
+      setStep(step + 1);
+    }, 50);
+
     //todo move rendering to callback
   }, [step, vertexBuffer]);
 
@@ -310,9 +313,10 @@ export function App() {
       style={{
         display: "flex",
         flexDirection: "column",
+        width: "100%",
       }}
     >
-      <canvas id="canvas" width="512" height="512"></canvas>
+      <canvas id="canvas" width="900" height="900"></canvas>
 
       <button onClick={() => setStep(step + 1)}>Click me</button>
     </div>
