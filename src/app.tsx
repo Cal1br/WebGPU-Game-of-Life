@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import "./app.css";
 import vertexShader from "./shader/square.vert.wgsl?raw";
 import fragmentShader from "./shader/square.frag.wgsl?raw";
@@ -32,23 +32,22 @@ const vertexBufferLayout: GPUVertexBufferLayout = {
 };
 const cellStateArray = new Uint32Array(64 * 64);
 
-const WORKGROUP_SIZE = 8;
-
 //TODO Using something called Index Buffers, you can feed a separate list of values to the GPU that tells it what vertices to connect together into triangles
 
 //reinitializng the pipeline is expensive
 
 export function App() {
   const [grid, setGrid] = useState(64);
-  const [step, setStep] = useState(0);
-  const [vertexBuffer, setVertexBuffer] = useState<GPUBuffer>();
-  const [cellStates, setCellStates] = useState<GPUBuffer[]>();
+  const [initialized, setInitialized] = useState<boolean>(false);
+  const stepRef = useRef(0);
 
-  const [pipeline, setPipeline] = useState<GPURenderPipeline>();
-  const [computePipeline, setComputePipeline] = useState<GPUComputePipeline>();
-  const [bindGroups, setBindGroups] = useState<GPUBindGroup[]>();
-  const [device, setDevice] = useState<GPUDevice>();
-  const [context, setContext] = useState<GPUCanvasContext>();
+  const vertexBufferRef = useRef<GPUBuffer>();
+  const cellStatesRef = useRef<GPUBuffer[]>();
+  const pipelineRef = useRef<GPURenderPipeline>();
+  const computePipelineRef = useRef<GPUComputePipeline>();
+  const bindGroupsRef = useRef<GPUBindGroup[]>();
+  const deviceRef = useRef<GPUDevice>();
+  const contextRef = useRef<GPUCanvasContext | null>();
 
   useEffect(() => {
     const asyncFunc = async () => {
@@ -69,244 +68,247 @@ export function App() {
       if (!adapter) {
         throw new Error("No adapter found!");
       }
-      const device = await adapter.requestDevice();
-      if (device === undefined) {
+      deviceRef.current = await adapter.requestDevice();
+      if (deviceRef.current === undefined) {
         throw new Error("GPU device not found!");
       }
-      const context = canvas.getContext("webgpu");
-      if (!context) {
+      contextRef.current = canvas.getContext("webgpu");
+      if (!contextRef.current) {
         throw new Error("Can't get context");
       }
       const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-      context.configure({
-        device: device,
+      contextRef.current.configure({
+        device: deviceRef.current,
         format: canvasFormat,
       });
-      setDevice(device);
-      setContext(context);
+      const device = deviceRef.current;
+      if (!device) {
+        return;
+      }
+
+      const encoder = device.createCommandEncoder();
+
+      //initialize shaders (compiling etc)
+      const vertexModule = device.createShaderModule({
+        label: "Vert Shader",
+        code: vertexShader,
+      });
+      const fragmentModule = device.createShaderModule({
+        label: "Frag Shader",
+        code: fragmentShader,
+      });
+      const computeModule = device.createShaderModule({
+        label: "Compute Shader",
+        code: computeShader,
+      });
+
+      //create bind group layout and pipeline layout
+      const bindGroupLayout = device.createBindGroupLayout({
+        label: "Cell Bind Group Layout",
+        entries: [
+          {
+            binding: 0,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE,
+            buffer: {}, // Grid uniform buffer
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE,
+            buffer: { type: "read-only-storage" }, // Cell state input buffer
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "storage" }, // Cell state output buffer
+          },
+        ],
+      });
+
+      //write data
+      const vertexBuffer = device.createBuffer({
+        label: "Vertices",
+        size: vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      vertexBufferRef.current = vertexBuffer;
+
+      device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+      const buffersCellState = [
+        device.createBuffer({
+          label: "Cell State buffer A",
+          size: cellStateArray.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        }),
+        device.createBuffer({
+          label: "Cell State buffer B",
+          size: cellStateArray.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        }),
+      ];
+      for (let i = 0; i < cellStateArray.length; ++i) {
+        cellStateArray[i] = Math.random() > 0.6 ? 1 : 0;
+      }
+      device.queue.writeBuffer(buffersCellState[0], 0, cellStateArray);
+
+      cellStateArray.fill(0);
+
+      device.queue.writeBuffer(buffersCellState[1], 0, cellStateArray);
+
+      cellStatesRef.current = buffersCellState;
+
+      const uniformArray = new Float32Array([grid, grid]);
+      const uniformBuffer = device.createBuffer({
+        label: "Grid Uniforms",
+        size: uniformArray.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
+
+      //rendering
+
+      const pipelineLayout = device.createPipelineLayout({
+        label: "Cell Pipeline Layout",
+        bindGroupLayouts: [bindGroupLayout],
+      });
+
+      const pipeline = device.createRenderPipeline({
+        label: "Pipeline",
+        layout: pipelineLayout,
+        vertex: {
+          module: vertexModule,
+          entryPoint: "main",
+          buffers: [vertexBufferLayout],
+        },
+        fragment: {
+          module: fragmentModule,
+          entryPoint: "main",
+          targets: [
+            {
+              format: navigator.gpu.getPreferredCanvasFormat(),
+            },
+          ],
+        },
+      });
+      pipelineRef.current = pipeline;
+
+      const computePipeline = device.createComputePipeline({
+        label: "Compute Layout",
+        layout: pipelineLayout,
+        compute: {
+          module: computeModule,
+          entryPoint: "main",
+        },
+      });
+
+      computePipelineRef.current = computePipeline;
+
+      bindGroupsRef.current = [
+        device.createBindGroup({
+          label: "Cell renderer bind group B",
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: uniformBuffer },
+            },
+            {
+              binding: 1,
+              resource: { buffer: buffersCellState[0] },
+            },
+            {
+              binding: 2,
+              resource: { buffer: buffersCellState[1] },
+            },
+          ],
+        }),
+        device.createBindGroup({
+          label: "Cell renderer bind group A",
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            {
+              binding: 0,
+              resource: { buffer: uniformBuffer },
+            },
+            {
+              binding: 1,
+              resource: { buffer: buffersCellState[1] },
+            },
+            {
+              binding: 2,
+              resource: { buffer: buffersCellState[0] },
+            },
+          ],
+        }),
+      ];
+
+      device.queue.submit([encoder.finish()]);
+      console.log("Initializaiton complete!");
+      setInitialized(true);
     };
     asyncFunc();
-  }, []);
+  }, [grid]);
 
   useEffect(() => {
-    if (!device) {
-      return;
-    }
-    const encoder = device.createCommandEncoder();
+    const animationFrame = (time: number) => {
+      //render pass
+      if (
+        !deviceRef.current ||
+        !bindGroupsRef.current ||
+        !pipelineRef.current ||
+        !vertexBufferRef.current ||
+        !contextRef.current ||
+        !computePipelineRef.current ||
+        !cellStatesRef.current
+      ) {
+        return;
+      }
 
-    //initialize shaders (compiling etc)
-    const vertexModule = device.createShaderModule({
-      label: "Vert Shader",
-      code: vertexShader,
-    });
-    const fragmentModule = device.createShaderModule({
-      label: "Frag Shader",
-      code: fragmentShader,
-    });
-    const computeModule = device.createShaderModule({
-      label: "Compute Shader",
-      code: computeShader,
-    });
+      const device = deviceRef.current;
+      const step = stepRef.current;
 
-    //create bind group layout and pipeline layout
-    const bindGroupLayout = device.createBindGroupLayout({
-      label: "Cell Bind Group Layout",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE,
-          buffer: {}, // Grid uniform buffer
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE,
-          buffer: { type: "read-only-storage" }, // Cell state input buffer
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" }, // Cell state output buffer
-        },
-      ],
-    });
+      // Compute pass
+      const encoder = device.createCommandEncoder();
 
-    //write data
-    const vertexBuffer = device.createBuffer({
-      label: "Vertices",
-      size: vertices.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
+      const computePass = encoder.beginComputePass();
 
-    device.queue.writeBuffer(vertexBuffer, 0, vertices);
-    setVertexBuffer(vertexBuffer);
+      computePass.setPipeline(computePipelineRef.current);
+      computePass.setBindGroup(0, bindGroupsRef.current[step % 2]);
 
-    const buffersCellState = [
-      device.createBuffer({
-        label: "Cell State buffer A",
-        size: cellStateArray.byteLength,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      }),
-      device.createBuffer({
-        label: "Cell State buffer B",
-        size: cellStateArray.byteLength,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      }),
-    ];
-    for (let i = 0; i < cellStateArray.length; ++i) {
-      cellStateArray[i] = Math.random() > 0.6 ? 1 : 0;
-    }
-    device.queue.writeBuffer(buffersCellState[0], 0, cellStateArray);
+      computePass.dispatchWorkgroups(grid / 8, grid / 8);
+      computePass.end();
+      // Start a render pass
 
-    cellStateArray.fill(0);
-
-    device.queue.writeBuffer(buffersCellState[1], 0, cellStateArray);
-
-    setCellStates(buffersCellState);
-
-    const uniformArray = new Float32Array([grid, grid]);
-    const uniformBuffer = device.createBuffer({
-      label: "Grid Uniforms",
-      size: uniformArray.byteLength,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(uniformBuffer, 0, uniformArray);
-
-    //rendering
-
-    const pipelineLayout = device.createPipelineLayout({
-      label: "Cell Pipeline Layout",
-      bindGroupLayouts: [bindGroupLayout],
-    });
-
-    const pipeline = device.createRenderPipeline({
-      label: "Pipeline",
-      layout: pipelineLayout,
-      vertex: {
-        module: vertexModule,
-        entryPoint: "main",
-        buffers: [vertexBufferLayout],
-      },
-      fragment: {
-        module: fragmentModule,
-        entryPoint: "main",
-        targets: [
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
           {
-            format: navigator.gpu.getPreferredCanvasFormat(),
+            view: contextRef.current.getCurrentTexture().createView(),
+            loadOp: "clear",
+            clearValue: {
+              r: (step % 333) / 333,
+              g: (step % 666) / 666,
+              b: (step % 999) / 999,
+              a: 1.0,
+            },
+            storeOp: "store",
           },
         ],
-      },
-    });
-    setPipeline(pipeline);
-    const computePipeline = device.createComputePipeline({
-      label: "Compute Layout",
-      layout: pipelineLayout,
-      compute: {
-        module: computeModule,
-        entryPoint: "main",
-      },
-    });
-    setComputePipeline(computePipeline);
+      });
 
-    setBindGroups([
-      device.createBindGroup({
-        label: "Cell renderer bind group B",
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          {
-            binding: 0,
-            resource: { buffer: uniformBuffer },
-          },
-          {
-            binding: 1,
-            resource: { buffer: buffersCellState[0] },
-          },
-          {
-            binding: 2,
-            resource: { buffer: buffersCellState[1] },
-          },
-        ],
-      }),
-      device.createBindGroup({
-        label: "Cell renderer bind group A",
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          {
-            binding: 0,
-            resource: { buffer: uniformBuffer },
-          },
-          {
-            binding: 1,
-            resource: { buffer: buffersCellState[1] },
-          },
-          {
-            binding: 2,
-            resource: { buffer: buffersCellState[0] },
-          },
-        ],
-      }),
-    ]);
-    device.queue.submit([encoder.finish()]);
-    console.log("Initializaiton complete!");
-  }, [grid, device]);
+      // Draw the grid.
+      pass.setPipeline(pipelineRef.current);
+      pass.setBindGroup(0, bindGroupsRef.current[step % 2]); // Updated!
+      pass.setVertexBuffer(0, vertexBufferRef.current);
+      pass.draw(vertices.length / 2, grid * grid);
 
-  useEffect(() => {
-    //render pass
-    if (
-      !device ||
-      !bindGroups ||
-      !pipeline ||
-      !vertexBuffer ||
-      !context ||
-      !computePipeline ||
-      !cellStates
-    ) {
-      return;
-    }
-
-    // Compute pass
-    const encoder = device.createCommandEncoder();
-
-    const computePass = encoder.beginComputePass();
-
-    computePass.setPipeline(computePipeline);
-    computePass.setBindGroup(0, bindGroups[step % 2]);
-
-    computePass.dispatchWorkgroups(grid / 8, grid / 8);
-    computePass.end();
-    // Start a render pass
-
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: context.getCurrentTexture().createView(),
-          loadOp: "clear",
-          clearValue: {
-            r: (step % 333) / 333,
-            g: (step % 666) / 666,
-            b: (step % 999) / 999,
-            a: 1.0,
-          },
-          storeOp: "store",
-        },
-      ],
-    });
-
-    // Draw the grid.
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroups[step % 2]); // Updated!
-    pass.setVertexBuffer(0, vertexBuffer);
-    pass.draw(vertices.length / 2, grid * grid);
-
-    // End the render pass and submit the command buffer
-    pass.end();
-    device.queue.submit([encoder.finish()]);
-
-    setTimeout(() => {
-      setStep(step + 1);
-    }, 50);
-
-    //todo move rendering to callback
-  }, [step, vertexBuffer]);
+      // End the render pass and submit the command buffer
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      stepRef.current = step + 1;
+      setTimeout(() => window.requestAnimationFrame(animationFrame), 100);
+    };
+    window.requestAnimationFrame(animationFrame);
+  }, [initialized]);
 
   return (
     <div
@@ -317,8 +319,6 @@ export function App() {
       }}
     >
       <canvas id="canvas" width="900" height="900"></canvas>
-
-      <button onClick={() => setStep(step + 1)}>Click me</button>
     </div>
   );
 }

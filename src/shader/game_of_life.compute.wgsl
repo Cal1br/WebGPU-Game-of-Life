@@ -18,17 +18,15 @@ fn main(input: ComputeShaderInput) {
     //1,0 => x
     //2,0 => x*2 + 0
 
-    let counter = cellActive(cell.x + 1, cell.y + 1) + cellActive(cell.x + 1, cell.y) + cellActive(cell.x + 1, cell.y - 1) + cellActive(cell.x, cell.y - 1) + cellActive(cell.x - 1, cell.y - 1) + cellActive(cell.x - 1, cell.y) + cellActive(cell.x - 1, cell.y + 1) + cellActive(cell.x, cell.y + 1);
 
-    //var counter = 0;
-   // Parenthesis are required.
-    // for (var y = input.cell.y - 1; y <= input.cell.y + 1; y += 1) {
-    //     for (var x = input.cell.x - 1; x <= input.cell.x + 1; x += 1) {
-    //         if !(y == input.cell.y && x == input.cell.x) && cell_state_in[cellIndex(vec2u(x, y))] == 1 {
-    //             counter++;
-    //         }
-    //     }
-    // }
+    var counter = 0;
+    for (var y = input.cell.y - 1; y <= input.cell.y + 1; y += 1) {
+        for (var x = input.cell.x - 1; x <= input.cell.x + 1; x += 1) {
+            if !(y == input.cell.y && x == input.cell.x) && cell_state_in[cellIndex(vec2u(x, y))] == 1 {
+                counter++;
+            }
+        }
+    }
 
     let i = cellIndex(cell.xy);
 
@@ -44,12 +42,6 @@ fn main(input: ComputeShaderInput) {
             cell_state_out[i] = 0;
         }
       }
-
-
-//     if cell_state_in[cellIndex(vec2u(input.cell.x, input.cell.y - 1))] == 1 {
-// //        cell_state_out[cellIndex(vec2u(input.cell.x, input.cell.y))] = 0;
-//         cell_state_out[cellIndex(vec2u(input.cell.x, input.cell.y))] = 1;
-//     }
 }
 
 fn cellIndex(cell: vec2u) -> u32 {
